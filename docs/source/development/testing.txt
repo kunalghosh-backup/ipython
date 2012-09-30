@@ -27,16 +27,12 @@ tests for that subpackage should be skipped if the dependencies are not found.
 This is very important so users don't get tests failing simply because they
 don't have dependencies.
 
-The testing system we use is a hybrid of nose_ and Twisted's trial_ test runner.
-We use both because nose detects more things than Twisted and allows for more
-flexible (and lighter-weight) ways of writing tests; in particular we've
+The testing system we use is an extension of the nose_ test runner.
+In particular we've
 developed a nose plugin that allows us to paste verbatim IPython sessions and
-test them as doctests, which is extremely important for us.  But the parts of
-IPython that depend on Twisted must be tested using trial, because only trial
-manages the Twisted reactor correctly.
+test them as doctests, which is extremely important for us.
 
 .. _nose: http://code.google.com/p/python-nose
-.. _trial: http://twistedmatrix.com/trac/wiki/TwistedTrial
 
 
 For the impatient: running the tests
@@ -70,6 +66,8 @@ the full test suite.  You can then run the suite with:
 
    iptest  [args]
 
+By default, this excludes the relatively slow tests for ``IPython.parallel``. To
+run these, use ``iptest --all``.
 
 Regardless of how you run things, you should eventually see something like:
 
@@ -88,7 +86,7 @@ Regardless of how you run things, you should eventually see something like:
     'sys_version': '2.6.6 (r266:84292, Sep 15 2010, 15:52:39) \n[GCC 4.4.5]'}
 
    Tools and libraries available at test time:
-      curses foolscap gobject gtk pexpect twisted wx wx.aui zope.interface
+      curses matplotlib pymongo qt sqlite3 tornado wx wx.aui zmq
 
    Ran 9 test groups in 67.213s
 
@@ -132,13 +130,6 @@ When developing, the :option:`--pdb` and :option:`--pdb-failures` of nose are
 particularly useful, these drop you into an interactive pdb session at the
 point of the error or failure respectively.
 
-To run Twisted-using tests, use the :command:`trial` command on a per file or
-package basis:
-
-.. code-block:: bash
-
-    trial IPython.kernel
-
 .. note::
 
    The system information summary printed above is accessible from the top
@@ -149,6 +140,23 @@ package basis:
        print sys_info()
 
    and include the resulting information in your query.
+
+Testing pull requests
+---------------------
+
+We have a script that fetches a pull request from Github, merges it with master,
+and runs the test suite on different versions of Python. This uses a separate
+copy of the repository, so you can keep working on the code while it runs. To
+run it::
+
+    python tools/test_pr.py -p 1234
+
+The number is the pull request number from Github; the ``-p`` flag makes it post
+the results to a comment on the pull request. Any further arguments are passed
+to ``iptest``.
+
+This requires the `requests <http://pypi.python.org/pypi/requests>`_ and
+`keyring <http://pypi.python.org/pypi/keyring>`_ packages.
 
 For developers: writing tests
 =============================
@@ -317,20 +325,6 @@ problem at hand, since both work)::
       yield is_smaller(x, y)
       
 
-Writing tests for Twisted-using code
-------------------------------------
-      
-Tests of Twisted [Twisted]_ using code should be written by subclassing the
-``TestCase`` class that comes with ``twisted.trial.unittest``. Furthermore, all
-:class:`Deferred` instances that are created in the test must be properly
-chained and the final one *must* be the return value of the test method.
-
-.. note::
-  
-  The best place to see how to use the testing tools, are the tests for these
-  tools themselves, which live in :mod:`IPython.testing.tests`.
-  
-    
 Design requirements
 ===================
 

@@ -72,6 +72,15 @@ def find_cmd(cmd):
     return os.path.abspath(path)
 
 
+def is_cmd_found(cmd):
+    """Check whether executable `cmd` exists or not and return a bool."""
+    try:
+        find_cmd(cmd)
+        return True
+    except FindCmdError:
+        return False
+
+
 def pycmd2argv(cmd):
     r"""Take the path of a python command and return a list (argv-style).
 
@@ -95,14 +104,8 @@ def pycmd2argv(cmd):
     if ext in ['.exe', '.com', '.bat']:
         return [cmd]
     else:
-        if sys.platform == 'win32':
-            # The -u option here turns on unbuffered output, which is required
-            # on Win32 to prevent wierd conflict and problems with Twisted.
-            # Also, use sys.executable to make sure we are picking up the
-            # right python exe.
-            return [sys.executable, '-u', cmd]
-        else:
-            return [sys.executable, cmd]
+        return [sys.executable, cmd]
+
 
 def abbrev_cwd():
     """ Return abbreviated version of cwd, e.g. d:mydir """

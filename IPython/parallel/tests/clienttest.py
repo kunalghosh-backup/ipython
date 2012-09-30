@@ -11,10 +11,12 @@ Authors:
 #  Distributed under the terms of the BSD License.  The full license is in
 #  the file COPYING, distributed as part of this software.
 #-------------------------------------------------------------------------------
+from __future__ import print_function
 
 import sys
 import tempfile
 import time
+from StringIO import StringIO
 
 from nose import SkipTest
 
@@ -59,6 +61,28 @@ def raiser(eclass):
     """raise an exception"""
     raise eclass()
 
+def generate_output():
+    """function for testing output
+    
+    publishes two outputs of each type, and returns
+    a rich displayable object.
+    """
+    
+    import sys
+    from IPython.core.display import display, HTML, Math
+    
+    print("stdout")
+    print("stderr", file=sys.stderr)
+    
+    display(HTML("<b>HTML</b>"))
+    
+    print("stdout2")
+    print("stderr2", file=sys.stderr)
+    
+    display(Math(r"\alpha=\beta"))
+    
+    return Math("42")
+
 # test decorator for skipping tests when libraries are unavailable
 def skip_without(*names):
     """skip a test if some names are not importable"""
@@ -73,6 +97,11 @@ def skip_without(*names):
         return f(*args, **kwargs)
     return skip_without_names
 
+#-------------------------------------------------------------------------------
+# Classes
+#-------------------------------------------------------------------------------
+
+
 class ClusterTestCase(BaseZMQTestCase):
     
     def add_engines(self, n=1, block=True):
@@ -80,6 +109,13 @@ class ClusterTestCase(BaseZMQTestCase):
         self.engines.extend(add_engines(n))
         if block:
             self.wait_on_engines()
+
+    def minimum_engines(self, n=1, block=True):
+        """add engines until there are at least n connected"""
+        self.engines.extend(add_engines(n, total=True))
+        if block:
+            self.wait_on_engines()
+            
     
     def wait_on_engines(self, timeout=5):
         """wait for our engines to connect."""
@@ -106,10 +142,21 @@ class ClusterTestCase(BaseZMQTestCase):
             except error.CompositeError as e:
                 e.raise_exception()
         except error.RemoteError as e:
-            self.assertEquals(etype.__name__, e.ename, "Should have raised %r, but raised %r"%(etype.__name__, e.ename))
+            self.assertEqual(etype.__name__, e.ename, "Should have raised %r, but raised %r"%(etype.__name__, e.ename))
         else:
             self.fail("should have raised a RemoteError")
             
+    def _wait_for(self, f, timeout=10):
+        """wait for a condition"""
+        tic = time.time()
+        while time.time() <= tic + timeout:
+            if f():
+                return
+            time.sleep(0.1)
+            self.client.spin()
+        if not f():
+            print("Warning: Awaited condition never arrived")
+    
     def setUp(self):
         BaseZMQTestCase.setUp(self)
         self.client = self.connect_client()

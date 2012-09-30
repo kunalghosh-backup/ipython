@@ -179,7 +179,6 @@ class IPythonWidget(FrontendWidget):
         """ Implemented to handle history tail replies, which are only supported
             by the IPython kernel.
         """
-        self.log.debug("history: %s", msg.get('content', ''))
         content = msg['content']
         if 'history' not in content:
             self.log.error("History request failed: %r"%content)
@@ -199,6 +198,7 @@ class IPythonWidget(FrontendWidget):
         # reset retry flag
         self._retrying_history_request = False
         history_items = content['history']
+        self.log.debug("Received history reply with %i entries", len(history_items))
         items = []
         last_cell = u""
         for _, _, cell in history_items:
@@ -214,15 +214,15 @@ class IPythonWidget(FrontendWidget):
         self.log.debug("pyout: %s", msg.get('content', ''))
         if not self._hidden and self._is_from_this_session(msg):
             content = msg['content']
-            prompt_number = content['execution_count']
+            prompt_number = content.get('execution_count', 0)
             data = content['data']
-            if data.has_key('text/html'):
+            if 'text/html' in data:
                 self._append_plain_text(self.output_sep, True)
                 self._append_html(self._make_out_prompt(prompt_number), True)
                 html = data['text/html']
                 self._append_plain_text('\n', True)
                 self._append_html(html + self.output_sep2, True)
-            elif data.has_key('text/plain'):
+            elif 'text/plain' in data:
                 self._append_plain_text(self.output_sep, True)
                 self._append_html(self._make_out_prompt(prompt_number), True)
                 text = data['text/plain']
@@ -245,21 +245,41 @@ class IPythonWidget(FrontendWidget):
             metadata = msg['content']['metadata']
             # In the regular IPythonWidget, we simply print the plain text
             # representation.
-            if data.has_key('text/html'):
+            if 'text/html' in data:
                 html = data['text/html']
                 self._append_html(html, True)
-            elif data.has_key('text/plain'):
+            elif 'text/plain' in data:
                 text = data['text/plain']
                 self._append_plain_text(text, True)
             # This newline seems to be needed for text and html output.
             self._append_plain_text(u'\n', True)
 
     def _started_channels(self):
-        """ Reimplemented to make a history request.
-        """
+        """Reimplemented to make a history request and load %guiref."""
         super(IPythonWidget, self)._started_channels()
+        self._load_guiref_magic()
         self.kernel_manager.shell_channel.history(hist_access_type='tail',
                                                   n=1000)
+    
+    def _started_kernel(self):
+        """Load %guiref when the kernel starts (if channels are also started).
+        
+        Principally triggered by kernel restart.
+        """
+        if self.kernel_manager.shell_channel is not None:
+            self._load_guiref_magic()
+    
+    def _load_guiref_magic(self):
+        """Load %guiref magic."""
+        self.kernel_manager.shell_channel.execute('\n'.join([
+            "try:",
+            "    _usage",
+            "except:",
+            "    from IPython.core import usage as _usage",
+            "    get_ipython().register_magic_function(_usage.page_guiref, 'line', 'guiref')",
+            "    del _usage",
+        ]), silent=True)
+        
     #---------------------------------------------------------------------------
     # 'ConsoleWidget' public interface
     #---------------------------------------------------------------------------
@@ -533,12 +553,14 @@ class IPythonWidget(FrontendWidget):
         """ Set the style sheets of the underlying widgets.
         """
         self.setStyleSheet(self.style_sheet)
-        self._control.document().setDefaultStyleSheet(self.style_sheet)
-        if self._page_control:
+        if self._control is not None:
+            self._control.document().setDefaultStyleSheet(self.style_sheet)
+            bg_color = self._control.palette().window().color()
+            self._ansi_processor.set_background_color(bg_color)
+        
+        if self._page_control is not None:
             self._page_control.document().setDefaultStyleSheet(self.style_sheet)
 
-        bg_color = self._control.palette().window().color()
-        self._ansi_processor.set_background_color(bg_color)
 
 
     def _syntax_style_changed(self):

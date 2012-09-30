@@ -30,6 +30,7 @@ import stat
 import sys
 
 from multiprocessing import Process
+from signal import signal, SIGINT, SIGABRT, SIGTERM
 
 import zmq
 from zmq.devices import ProcessMonitoredQueue
@@ -55,7 +56,7 @@ from IPython.parallel.controller.hub import HubFactory
 from IPython.parallel.controller.scheduler import TaskScheduler,launch_scheduler
 from IPython.parallel.controller.sqlitedb import SQLiteDB
 
-from IPython.parallel.util import signal_children, split_url, disambiguate_url
+from IPython.parallel.util import split_url, disambiguate_url
 
 # conditional import of MongoDB backend class
 
@@ -109,12 +110,16 @@ flags.update({
     'nodb' : ({'HubFactory' : {'db_class' : 'IPython.parallel.controller.dictdb.NoDB'}},
                     """use dummy DB backend, which doesn't store any information.
                     
-                    This can be used to prevent growth of the memory footprint of the Hub
-                    in cases where its record-keeping is not required.  Requesting results
-                    of tasks submitted by other clients, db_queries, and task resubmission
-                    will not be available."""),
+                    This is the default as of IPython 0.13.
+                    
+                    To enable delayed or repeated retrieval of results from the Hub,
+                    select one of the true db backends.
+                    """),
     'reuse' : ({'IPControllerApp' : {'reuse_files' : True}},
-                    'reuse existing json connection files')
+                    'reuse existing json connection files'),
+    'restore' : ({'IPControllerApp' : {'restore_engines' : True, 'reuse_files' : True}},
+                    'Attempt to restore engines from a JSON file.  '
+                    'For use when resuming a crashed controller'),
 })
 
 flags.update(session_flags)
@@ -137,7 +142,6 @@ aliases = dict(
 aliases.update(base_aliases)
 aliases.update(session_aliases)
 
-
 class IPControllerApp(BaseParallelApplication):
 
     name = u'ipcontroller'
@@ -151,7 +155,13 @@ class IPControllerApp(BaseParallelApplication):
         help="""Whether to create profile dir if it doesn't exist.""")
     
     reuse_files = Bool(False, config=True,
-        help='Whether to reuse existing json connection files.'
+        help="""Whether to reuse existing json connection files.
+        If False, connection files will be removed on a clean exit.
+        """
+    )
+    restore_engines = Bool(False, config=True,
+        help="""Reload engine state from JSON file
+        """
     )
     ssh_server = Unicode(u'', config=True,
         help="""ssh url for clients to use when connecting to the Controller
@@ -192,6 +202,12 @@ class IPControllerApp(BaseParallelApplication):
 
     def _use_threads_changed(self, name, old, new):
         self.mq_class = 'zmq.devices.%sMonitoredQueue'%('Thread' if new else 'Process')
+    
+    write_connection_files = Bool(True,
+        help="""Whether to write connection files to disk.
+        True in all cases other than runs with `reuse_files=True` *after the first*
+        """
+    )
 
     aliases = Dict(aliases)
     flags = Dict(flags)
@@ -200,21 +216,17 @@ class IPControllerApp(BaseParallelApplication):
     def save_connection_dict(self, fname, cdict):
         """save a connection dict to json file."""
         c = self.config
-        url = cdict['url']
+        url = cdict['registration']
         location = cdict['location']
+        
         if not location:
             try:
-                proto,ip,port = split_url(url)
-            except AssertionError:
-                pass
-            else:
-                try:
-                    location = socket.gethostbyname_ex(socket.gethostname())[2][-1]
-                except (socket.gaierror, IndexError):
-                    self.log.warn("Could not identify this machine's IP, assuming 127.0.0.1."
-                    " You may need to specify '--location=<external_ip_address>' to help"
-                    " IPython decide when to connect via loopback.")
-                    location = '127.0.0.1'
+                location = socket.gethostbyname_ex(socket.gethostname())[2][-1]
+            except (socket.gaierror, IndexError):
+                self.log.warn("Could not identify this machine's IP, assuming 127.0.0.1."
+                " You may need to specify '--location=<external_ip_address>' to help"
+                " IPython decide when to connect via loopback.")
+                location = '127.0.0.1'
             cdict['location'] = location
         fname = os.path.join(self.profile_dir.security_dir, fname)
         self.log.info("writing connection info to %s", fname)
@@ -226,35 +238,65 @@ class IPControllerApp(BaseParallelApplication):
         """load config from existing json connector files."""
         c = self.config
         self.log.debug("loading config from JSON")
-        # load from engine config
+        
+        # load engine config
+        
         fname = os.path.join(self.profile_dir.security_dir, self.engine_json_file)
         self.log.info("loading connection info from %s", fname)
         with open(fname) as f:
-            cfg = json.loads(f.read())
-        key = cfg['exec_key']
+            ecfg = json.loads(f.read())
+        
         # json gives unicode, Session.key wants bytes
-        c.Session.key = key.encode('ascii')
-        xport,addr = cfg['url'].split('://')
-        c.HubFactory.engine_transport = xport
-        ip,ports = addr.split(':')
+        c.Session.key = ecfg['exec_key'].encode('ascii')
+        
+        xport,ip = ecfg['interface'].split('://')
+        
         c.HubFactory.engine_ip = ip
-        c.HubFactory.regport = int(ports)
-        self.location = cfg['location']
+        c.HubFactory.engine_transport = xport
+        
+        self.location = ecfg['location']
         if not self.engine_ssh_server:
-            self.engine_ssh_server = cfg['ssh']
+            self.engine_ssh_server = ecfg['ssh']
+        
         # load client config
+        
         fname = os.path.join(self.profile_dir.security_dir, self.client_json_file)
         self.log.info("loading connection info from %s", fname)
         with open(fname) as f:
-            cfg = json.loads(f.read())
-        assert key == cfg['exec_key'], "exec_key mismatch between engine and client keys"
-        xport,addr = cfg['url'].split('://')
+            ccfg = json.loads(f.read())
+        
+        for key in ('exec_key', 'registration', 'pack', 'unpack'):
+            assert ccfg[key] == ecfg[key], "mismatch between engine and client info: %r" % key
+        
+        xport,addr = ccfg['interface'].split('://')
+        
         c.HubFactory.client_transport = xport
-        ip,ports = addr.split(':')
         c.HubFactory.client_ip = ip
         if not self.ssh_server:
-            self.ssh_server = cfg['ssh']
-        assert int(ports) == c.HubFactory.regport, "regport mismatch"
+            self.ssh_server = ccfg['ssh']
+        
+        # load port config:
+        c.HubFactory.regport = ecfg['registration']
+        c.HubFactory.hb = (ecfg['hb_ping'], ecfg['hb_pong'])
+        c.HubFactory.control = (ccfg['control'], ecfg['control'])
+        c.HubFactory.mux = (ccfg['mux'], ecfg['mux'])
+        c.HubFactory.task = (ccfg['task'], ecfg['task'])
+        c.HubFactory.iopub = (ccfg['iopub'], ecfg['iopub'])
+        c.HubFactory.notifier_port = ccfg['notification']
+    
+    def cleanup_connection_files(self):
+        if self.reuse_files:
+            self.log.debug("leaving JSON connection files for reuse")
+            return
+        self.log.debug("cleaning up JSON connection files")
+        for f in (self.client_json_file, self.engine_json_file):
+            f = os.path.join(self.profile_dir.security_dir, f)
+            try:
+                os.remove(f)
+            except Exception as e:
+                self.log.error("Failed to cleanup connection file: %s", e)
+            else:
+                self.log.debug(u"removed %s", f)
     
     def load_secondary_config(self):
         """secondary config, loading from JSON and setting defaults"""
@@ -263,7 +305,11 @@ class IPControllerApp(BaseParallelApplication):
                 self.load_config_from_json()
             except (AssertionError,IOError) as e:
                 self.log.error("Could not load config from JSON: %s" % e)
-                self.reuse_files=False
+            else:
+                # successfully loaded config from JSON, and reuse=True
+                # no need to wite back the same file
+                self.write_connection_files = False
+                
         # switch Session.key default to secure
         default_secure(self.config)
         self.log.debug("Config changed")
@@ -284,33 +330,45 @@ class IPControllerApp(BaseParallelApplication):
             self.log.error("Couldn't construct the Controller", exc_info=True)
             self.exit(1)
         
-        if not self.reuse_files:
+        if self.write_connection_files:
             # save to new json config files
             f = self.factory
-            cdict = {'exec_key' : f.session.key.decode('ascii'),
-                    'ssh' : self.ssh_server,
-                    'url' : "%s://%s:%s"%(f.client_transport, f.client_ip, f.regport),
-                    'location' : self.location
-                    }
+            base = {
+                'exec_key'  : f.session.key.decode('ascii'),
+                'location'  : self.location,
+                'pack'      : f.session.packer,
+                'unpack'    : f.session.unpacker,
+            }
+            
+            cdict = {'ssh' : self.ssh_server}
+            cdict.update(f.client_info)
+            cdict.update(base)
             self.save_connection_dict(self.client_json_file, cdict)
-            edict = cdict
-            edict['url']="%s://%s:%s"%((f.client_transport, f.client_ip, f.regport))
-            edict['ssh'] = self.engine_ssh_server
+            
+            edict = {'ssh' : self.engine_ssh_server}
+            edict.update(f.engine_info)
+            edict.update(base)
             self.save_connection_dict(self.engine_json_file, edict)
 
-    #
+        fname = "engines%s.json" % self.cluster_id
+        self.factory.hub.engine_state_file = os.path.join(self.profile_dir.log_dir, fname)
+        if self.restore_engines:
+            self.factory.hub._load_engine_state()
+
     def init_schedulers(self):
         children = self.children
         mq = import_item(str(self.mq_class))
         
-        hub = self.factory
+        f = self.factory
+        ident = f.session.bsession
         # disambiguate url, in case of *
-        monitor_url = disambiguate_url(hub.monitor_url)
+        monitor_url = disambiguate_url(f.monitor_url)
         # maybe_inproc = 'inproc://monitor' if self.use_threads else monitor_url
         # IOPub relay (in a Process)
         q = mq(zmq.PUB, zmq.SUB, zmq.PUB, b'N/A',b'iopub')
-        q.bind_in(hub.client_info['iopub'])
-        q.bind_out(hub.engine_info['iopub'])
+        q.bind_in(f.client_url('iopub'))
+        q.setsockopt_in(zmq.IDENTITY, ident + b"_iopub")
+        q.bind_out(f.engine_url('iopub'))
         q.setsockopt_out(zmq.SUBSCRIBE, b'')
         q.connect_mon(monitor_url)
         q.daemon=True
@@ -318,18 +376,20 @@ class IPControllerApp(BaseParallelApplication):
 
         # Multiplexer Queue (in a Process)
         q = mq(zmq.ROUTER, zmq.ROUTER, zmq.PUB, b'in', b'out')
-        q.bind_in(hub.client_info['mux'])
-        q.setsockopt_in(zmq.IDENTITY, b'mux')
-        q.bind_out(hub.engine_info['mux'])
+        q.bind_in(f.client_url('mux'))
+        q.setsockopt_in(zmq.IDENTITY, b'mux_in')
+        q.bind_out(f.engine_url('mux'))
+        q.setsockopt_out(zmq.IDENTITY, b'mux_out')
         q.connect_mon(monitor_url)
         q.daemon=True
         children.append(q)
 
         # Control Queue (in a Process)
         q = mq(zmq.ROUTER, zmq.ROUTER, zmq.PUB, b'incontrol', b'outcontrol')
-        q.bind_in(hub.client_info['control'])
-        q.setsockopt_in(zmq.IDENTITY, b'control')
-        q.bind_out(hub.engine_info['control'])
+        q.bind_in(f.client_url('control'))
+        q.setsockopt_in(zmq.IDENTITY, b'control_in')
+        q.bind_out(f.engine_url('control'))
+        q.setsockopt_out(zmq.IDENTITY, b'control_out')
         q.connect_mon(monitor_url)
         q.daemon=True
         children.append(q)
@@ -339,12 +399,13 @@ class IPControllerApp(BaseParallelApplication):
             scheme = TaskScheduler.scheme_name.get_default_value()
         # Task Queue (in a Process)
         if scheme == 'pure':
-            self.log.warn("task::using pure XREQ Task scheduler")
+            self.log.warn("task::using pure DEALER Task scheduler")
             q = mq(zmq.ROUTER, zmq.DEALER, zmq.PUB, b'intask', b'outtask')
             # q.setsockopt_out(zmq.HWM, hub.hwm)
-            q.bind_in(hub.client_info['task'][1])
-            q.setsockopt_in(zmq.IDENTITY, b'task')
-            q.bind_out(hub.engine_info['task'])
+            q.bind_in(f.client_url('task'))
+            q.setsockopt_in(zmq.IDENTITY, b'task_in')
+            q.bind_out(f.engine_url('task'))
+            q.setsockopt_out(zmq.IDENTITY, b'task_out')
             q.connect_mon(monitor_url)
             q.daemon=True
             children.append(q)
@@ -353,8 +414,10 @@ class IPControllerApp(BaseParallelApplication):
 
         else:
             self.log.info("task::using Python %s Task scheduler"%scheme)
-            sargs = (hub.client_info['task'][1], hub.engine_info['task'],
-                                monitor_url, disambiguate_url(hub.client_info['notification']))
+            sargs = (f.client_url('task'), f.engine_url('task'),
+                    monitor_url, disambiguate_url(f.client_url('notification')),
+                    disambiguate_url(f.client_url('registration')),
+            )
             kwargs = dict(logname='scheduler', loglevel=self.log_level,
                             log_url = self.log_url, config=dict(self.config))
             if 'Process' in self.mq_class:
@@ -367,21 +430,31 @@ class IPControllerApp(BaseParallelApplication):
                 kwargs['in_thread'] = True
                 launch_scheduler(*sargs, **kwargs)
 
+    def terminate_children(self):
+        child_procs = []
+        for child in self.children:
+            if isinstance(child, ProcessMonitoredQueue):
+                child_procs.append(child.launcher)
+            elif isinstance(child, Process):
+                child_procs.append(child)
+        if child_procs:
+            self.log.critical("terminating children...")
+            for child in child_procs:
+                try:
+                    child.terminate()
+                except OSError:
+                    # already dead
+                    pass
     
-    def save_urls(self):
-        """save the registration urls to files."""
-        c = self.config
-        
-        sec_dir = self.profile_dir.security_dir
-        cf = self.factory
-        
-        with open(os.path.join(sec_dir, 'ipcontroller-engine.url'), 'w') as f:
-            f.write("%s://%s:%s"%(cf.engine_transport, cf.engine_ip, cf.regport))
-        
-        with open(os.path.join(sec_dir, 'ipcontroller-client.url'), 'w') as f:
-            f.write("%s://%s:%s"%(cf.client_transport, cf.client_ip, cf.regport))
-        
+    def handle_signal(self, sig, frame):
+        self.log.critical("Received signal %i, shutting down", sig)
+        self.terminate_children()
+        self.loop.stop()
     
+    def init_signal(self):
+        for sig in (SIGINT, SIGABRT, SIGTERM):
+            signal(sig, self.handle_signal)
+
     def do_import_statements(self):
         statements = self.import_statements
         for s in statements:
@@ -398,11 +471,9 @@ class IPControllerApp(BaseParallelApplication):
             lsock = context.socket(zmq.PUB)
             lsock.connect(self.log_url)
             handler = PUBHandler(lsock)
-            self.log.removeHandler(self._log_handler)
             handler.root_topic = 'controller'
             handler.setLevel(self.log_level)
             self.log.addHandler(handler)
-            self._log_handler = handler
     
     @catch_config_error
     def initialize(self, argv=None):
@@ -415,15 +486,11 @@ class IPControllerApp(BaseParallelApplication):
     def start(self):
         # Start the subprocesses:
         self.factory.start()
-        child_procs = []
+        # children must be started before signals are setup,
+        # otherwise signal-handling will fire multiple times
         for child in self.children:
             child.start()
-            if isinstance(child, ProcessMonitoredQueue):
-                child_procs.append(child.launcher)
-            elif isinstance(child, Process):
-                child_procs.append(child)
-        if child_procs:
-            signal_children(child_procs)
+        self.init_signal()
 
         self.write_pid_file(overwrite=True)
 
@@ -431,6 +498,8 @@ class IPControllerApp(BaseParallelApplication):
             self.factory.loop.start()
         except KeyboardInterrupt:
             self.log.critical("Interrupted, Exiting...\n")
+        finally:
+            self.cleanup_connection_files()
             
 
 

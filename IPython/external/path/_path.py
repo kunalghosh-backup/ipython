@@ -602,7 +602,7 @@ class path(unicode):
         u'\x85', u'\r\x85', and u'\u2028'.
 
         (This is slightly different from when you open a file for
-        writing with fopen(filename, "w") in C or file(filename, 'w')
+        writing with fopen(filename, "w") in C or open(filename, 'w')
         in Python.)
 
 
@@ -860,10 +860,10 @@ class path(unicode):
 
     # --- Create/delete operations on directories
 
-    def mkdir(self, mode=0777):
+    def mkdir(self, mode=0o777):
         os.mkdir(self, mode)
 
-    def makedirs(self, mode=0777):
+    def makedirs(self, mode=0o777):
         os.makedirs(self, mode)
 
     def rmdir(self):
@@ -879,7 +879,7 @@ class path(unicode):
         """ Set the access/modified times of this file to the current time.
         Create the file if it does not exist.
         """
-        fd = os.open(self, os.O_WRONLY | os.O_CREAT, 0666)
+        fd = os.open(self, os.O_WRONLY | os.O_CREAT, 0o666)
         os.close(fd)
         os.utime(self, None)
 

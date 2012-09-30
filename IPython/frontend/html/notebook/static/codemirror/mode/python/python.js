@@ -1,15 +1,14 @@
 CodeMirror.defineMode("python", function(conf, parserConf) {
     var ERRORCLASS = 'error';
-
+    
     function wordRegexp(words) {
         return new RegExp("^((" + words.join(")|(") + "))\\b");
     }
 
     // IPython-specific changes: add '?' as recognized character.
-    //var singleOperators = new RegExp("^[\\+\\-\\*/%&|\\^~<>!]");
     var singleOperators = new RegExp("^[\\+\\-\\*/%&|\\^~<>!\\?]");
     // End IPython changes.
-    
+
     var singleDelimiters = new RegExp('^[\\(\\)\\[\\]\\{\\}@,:`=;\\.]');
     var doubleOperators = new RegExp("^((==)|(!=)|(<=)|(>=)|(<>)|(<<)|(>>)|(//)|(\\*\\*))");
     var doubleDelimiters = new RegExp("^((\\+=)|(\\-=)|(\\*=)|(%=)|(/=)|(&=)|(\\|=)|(\\^=))");
@@ -22,28 +21,35 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
                           'for', 'from', 'global', 'if', 'import',
                           'lambda', 'pass', 'raise', 'return',
                           'try', 'while', 'with', 'yield'];
-    var commontypes = ['bool', 'classmethod', 'complex', 'dict', 'enumerate',
-                       'float', 'frozenset', 'int', 'list', 'object',
-                       'property', 'reversed', 'set', 'slice', 'staticmethod',
-                       'str', 'super', 'tuple', 'type'];
-    var py2 = {'types': ['basestring', 'buffer', 'file', 'long', 'unicode',
-                         'xrange'],
+    var commonBuiltins = ['abs', 'all', 'any', 'bin', 'bool', 'bytearray', 'callable', 'chr',
+                          'classmethod', 'compile', 'complex', 'delattr', 'dict', 'dir', 'divmod',
+                          'enumerate', 'eval', 'filter', 'float', 'format', 'frozenset',
+                          'getattr', 'globals', 'hasattr', 'hash', 'help', 'hex', 'id',
+                          'input', 'int', 'isinstance', 'issubclass', 'iter', 'len',
+                          'list', 'locals', 'map', 'max', 'memoryview', 'min', 'next',
+                          'object', 'oct', 'open', 'ord', 'pow', 'property', 'range',
+                          'repr', 'reversed', 'round', 'set', 'setattr', 'slice',
+                          'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple',
+                          'type', 'vars', 'zip', '__import__', 'NotImplemented',
+                          'Ellipsis', '__debug__'];
+    var py2 = {'builtins': ['apply', 'basestring', 'buffer', 'cmp', 'coerce', 'execfile',
+                            'file', 'intern', 'long', 'raw_input', 'reduce', 'reload',
+                            'unichr', 'unicode', 'xrange', 'False', 'True', 'None'],
                'keywords': ['exec', 'print']};
-    var py3 = {'types': ['bytearray', 'bytes', 'filter', 'map', 'memoryview',
-                         'open', 'range', 'zip'],
-               'keywords': ['nonlocal']};
+    var py3 = {'builtins': ['ascii', 'bytes', 'exec', 'print'],
+               'keywords': ['nonlocal', 'False', 'True', 'None']};
 
     if (!!parserConf.version && parseInt(parserConf.version, 10) === 3) {
         commonkeywords = commonkeywords.concat(py3.keywords);
-        commontypes = commontypes.concat(py3.types);
+        commonBuiltins = commonBuiltins.concat(py3.builtins);
         var stringPrefixes = new RegExp("^(([rb]|(br))?('{3}|\"{3}|['\"]))", "i");
     } else {
         commonkeywords = commonkeywords.concat(py2.keywords);
-        commontypes = commontypes.concat(py2.types);
+        commonBuiltins = commonBuiltins.concat(py2.builtins);
         var stringPrefixes = new RegExp("^(([rub]|(ur)|(br))?('{3}|\"{3}|['\"]))", "i");
     }
     var keywords = wordRegexp(commonkeywords);
-    var types = wordRegexp(commontypes);
+    var builtins = wordRegexp(commonBuiltins);
 
     var indentInfo = null;
 
@@ -69,15 +75,15 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
         if (stream.eatSpace()) {
             return null;
         }
-
+        
         var ch = stream.peek();
-
+        
         // Handle Comments
         if (ch === '#') {
             stream.skipToEnd();
             return 'comment';
         }
-
+        
         // Handle Number Literals
         if (stream.match(/^[0-9\.]/, false)) {
             var floatLiteral = false;
@@ -113,13 +119,13 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
                 return 'number';
             }
         }
-
+        
         // Handle Strings
         if (stream.match(stringPrefixes)) {
             state.tokenize = tokenStringFactory(stream.current());
             return state.tokenize(stream, state);
         }
-
+        
         // Handle operators and Delimiters
         if (stream.match(tripleDelimiters) || stream.match(doubleDelimiters)) {
             return null;
@@ -132,31 +138,31 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
         if (stream.match(singleDelimiters)) {
             return null;
         }
-
-        if (stream.match(types)) {
-            return 'builtin';
-        }
-
+        
         if (stream.match(keywords)) {
             return 'keyword';
         }
-
+        
+        if (stream.match(builtins)) {
+            return 'builtin';
+        }
+        
         if (stream.match(identifiers)) {
             return 'variable';
         }
-
+        
         // Handle non-detected items
         stream.next();
         return ERRORCLASS;
     }
-
+    
     function tokenStringFactory(delimiter) {
         while ('rub'.indexOf(delimiter.charAt(0).toLowerCase()) >= 0) {
             delimiter = delimiter.substr(1);
         }
         var singleline = delimiter.length == 1;
         var OUTCLASS = 'string';
-
+        
         return function tokenString(stream, state) {
             while (!stream.eol()) {
                 stream.eatWhile(/[^'"\\]/);
@@ -182,11 +188,15 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
             return OUTCLASS;
         };
     }
-
+    
     function indent(stream, state, type) {
         type = type || 'py';
         var indentUnit = 0;
         if (type === 'py') {
+            if (state.scopes[0].type !== 'py') {
+                state.scopes[0].offset = stream.indentation();
+                return;
+            }
             for (var i = 0; i < state.scopes.length; ++i) {
                 if (state.scopes[i].type === 'py') {
                     indentUnit = state.scopes[i].offset + conf.indentUnit;
@@ -201,8 +211,9 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
             type: type
         });
     }
-
-    function dedent(stream, state) {
+    
+    function dedent(stream, state, type) {
+        type = type || 'py';
         if (state.scopes.length == 1) return;
         if (state.scopes[0].type === 'py') {
             var _indent = stream.indentation();
@@ -221,8 +232,16 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
             }
             return false
         } else {
-            state.scopes.shift();
-            return false;
+            if (type === 'py') {
+                state.scopes[0].offset = stream.indentation();
+                return false;
+            } else {
+                if (state.scopes[0].type != type) {
+                    return true;
+                }
+                state.scopes.shift();
+                return false;
+            }
         }
     }
 
@@ -233,32 +252,30 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
 
         // Handle '.' connected identifiers
         if (current === '.') {
-            style = state.tokenize(stream, state);
-            current = stream.current();
-            if (style === 'variable') {
-                return 'variable';
-            } else {
-                return ERRORCLASS;
+            style = stream.match(identifiers, false) ? null : ERRORCLASS;
+            if (style === null && state.lastToken === 'meta') {
+                // Apply 'meta' style to '.' connected identifiers when
+                // appropriate.
+                style = 'meta';
             }
+            return style;
         }
-
+        
         // Handle decorators
         if (current === '@') {
-            style = state.tokenize(stream, state);
-            current = stream.current();
-            if (style === 'variable'
-                || current === '@staticmethod'
-                || current === '@classmethod') {
-                return 'meta';
-            } else {
-                return ERRORCLASS;
-            }
+            return stream.match(identifiers, false) ? 'meta' : ERRORCLASS;
         }
 
+        if ((style === 'variable' || style === 'builtin')
+            && state.lastToken === 'meta') {
+            style = 'meta';
+        }
+        
         // Handle scope changes.
         if (current === 'pass' || current === 'return') {
             state.dedent += 1;
         }
+        if (current === 'lambda') state.lambda = true;
         if ((current === ':' && !state.lambda && state.scopes[0].type == 'py')
             || indentInfo === 'indent') {
             indent(stream, state);
@@ -274,7 +291,7 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
         }
         delimiter_index = '])}'.indexOf(current);
         if (delimiter_index !== -1) {
-            if (dedent(stream, state)) {
+            if (dedent(stream, state, current)) {
                 return ERRORCLASS;
             }
         }
@@ -282,7 +299,7 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
             if (state.scopes.length > 1) state.scopes.shift();
             state.dedent -= 1;
         }
-
+        
         return style;
     }
 
@@ -296,27 +313,27 @@ CodeMirror.defineMode("python", function(conf, parserConf) {
               dedent: 0
           };
         },
-
+        
         token: function(stream, state) {
             var style = tokenLexer(stream, state);
-
-            state.lastToken = {style:style, content: stream.current()};
-
+            
+            state.lastToken = style;
+            
             if (stream.eol() && stream.lambda) {
                 state.lambda = false;
             }
-
+            
             return style;
         },
-
+        
         indent: function(state, textAfter) {
             if (state.tokenize != tokenBase) {
                 return 0;
             }
-
+            
             return state.scopes[0].offset;
         }
-
+        
     };
     return external;
 });

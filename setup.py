@@ -80,7 +80,7 @@ pjoin = os.path.join
 
 def cleanup():
     """Clean up the junk left around by the build process"""
-    if "develop" not in sys.argv:
+    if "develop" not in sys.argv and "egg_info" not in sys.argv:
         try:
             shutil.rmtree('ipython.egg-info')
         except:
@@ -154,35 +154,6 @@ if len(sys.argv) >= 2 and sys.argv[1] in ('sdist','bdist_rpm'):
                   'cd docs/man && gzip -9c pycolor.1 > pycolor.1.gz'),
                  ]
 
-    # Only build the docs if sphinx is present
-    try:
-        import sphinx
-    except ImportError:
-        pass
-    else:
-        # The Makefile calls the do_sphinx scripts to build html and pdf, so
-        # just one target is enough to cover all manual generation
-
-        # First, compute all the dependencies that can force us to rebuild the
-        # docs.  Start with the main release file that contains metadata
-        docdeps = ['IPython/core/release.py']
-        # Inculde all the reST sources
-        pjoin = os.path.join
-        for dirpath,dirnames,filenames in os.walk('docs/source'):
-            if dirpath in ['_static','_templates']:
-                continue
-            docdeps += [ pjoin(dirpath,f) for f in filenames
-                         if f.endswith('.txt') ]
-        # and the examples
-        for dirpath,dirnames,filenames in os.walk('docs/example'):
-            docdeps += [ pjoin(dirpath,f) for f in filenames
-                         if not f.endswith('~') ]
-        # then, make them all dependencies for the main html docs
-        to_update.append(
-            ('docs/dist/index.html',
-             docdeps,
-             "cd docs && make dist")
-            )
 
     [ target_update(*t) for t in to_update ]
 
@@ -194,10 +165,41 @@ packages = find_packages()
 package_data = find_package_data()
 data_files = find_data_files()
 
-setup_args['cmdclass'] = {'build_py': record_commit_info('IPython')}
 setup_args['packages'] = packages
 setup_args['package_data'] = package_data
 setup_args['data_files'] = data_files
+
+#---------------------------------------------------------------------------
+# custom distutils commands
+#---------------------------------------------------------------------------
+# imports here, so they are after setuptools import if there was one
+from distutils.command.sdist import sdist
+from distutils.command.upload import upload
+
+class UploadWindowsInstallers(upload):
+    
+    description = "Upload Windows installers to PyPI (only used from tools/release_windows.py)"
+    user_options = upload.user_options + [
+        ('files=', 'f', 'exe file (or glob) to upload')
+    ]
+    def initialize_options(self):
+        upload.initialize_options(self)
+        meta = self.distribution.metadata
+        base = '{name}-{version}'.format(
+            name=meta.get_name(),
+            version=meta.get_version()
+        )
+        self.files = os.path.join('dist', '%s.*.exe' % base)
+    
+    def run(self):
+        for dist_file in glob(self.files):
+            self.upload_file('bdist_wininst', 'any', dist_file)
+
+setup_args['cmdclass'] = {
+    'build_py': record_commit_info('IPython'),
+    'sdist' : record_commit_info('IPython', sdist),
+    'upload_wininst' : UploadWindowsInstallers,
+}
 
 #---------------------------------------------------------------------------
 # Handle scripts, dependencies, and setuptools specific things
@@ -263,9 +265,21 @@ if 'setuptools' in sys.modules:
     
     if PY3:
         setuptools_extra_args['use_2to3'] = True
+        # we try to make a 2.6, 2.7, and 3.1 to 3.3 python compatible code
+        # so we explicitly disable some 2to3 fixes to be sure we aren't forgetting
+        # anything.
+        setuptools_extra_args['use_2to3_exclude_fixers'] = [
+                'lib2to3.fixes.fix_apply',
+                'lib2to3.fixes.fix_except',
+                'lib2to3.fixes.fix_has_key',
+                'lib2to3.fixes.fix_next',
+                'lib2to3.fixes.fix_repr',
+                'lib2to3.fixes.fix_tuple_params',
+                ]
         from setuptools.command.build_py import build_py
         setup_args['cmdclass'] = {'build_py': record_commit_info('IPython', build_cmd=build_py)}
         setuptools_extra_args['entry_points'] = find_scripts(True, suffix='3')
+        setuptools._dont_write_bytecode = True
 else:
     # If we are running without setuptools, call this function which will
     # check for dependencies an inform the user what is needed.  This is

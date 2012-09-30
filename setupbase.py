@@ -44,6 +44,9 @@ def oscmd(s):
     print(">", s)
     os.system(s)
 
+# Py3 compatibility hacks, without assuming IPython itself is installed with
+# the full py3compat machinery.
+
 try:
     execfile
 except NameError:
@@ -97,11 +100,11 @@ def find_packages():
     """
     Find all of IPython's packages.
     """
-    excludes = ['deathrow']
+    excludes = ['deathrow', 'quarantine']
     packages = []
     for dir,subdirs,files in os.walk('IPython'):
         package = dir.replace(os.path.sep, '.')
-        if any([ package.startswith('IPython.'+exc) for exc in excludes ]):
+        if any(package.startswith('IPython.'+exc) for exc in excludes):
             # package is to be excluded (e.g. deathrow)
             continue
         if '__init__.py' not in files:
@@ -142,6 +145,7 @@ def find_package_data():
     package_data = {
         'IPython.config.profile' : ['README*', '*/*.py'],
         'IPython.testing' : ['*.txt'],
+        'IPython.testing.plugin' : ['*.txt'],
         'IPython.frontend.html.notebook' : ['templates/*'] + static_data,
         'IPython.frontend.qt.console' : ['resources/icon/*.svg'],
     }
@@ -200,12 +204,12 @@ def find_data_files():
     manpagebase = pjoin('share', 'man', 'man1')
 
     # Simple file lists can be made by hand
-    manpages  = filter(isfile, glob(pjoin('docs','man','*.1.gz')))
+    manpages = [f for f in glob(pjoin('docs','man','*.1.gz')) if isfile(f)]
     if not manpages:
         # When running from a source tree, the manpages aren't gzipped
-        manpages = filter(isfile, glob(pjoin('docs','man','*.1')))
-    igridhelpfiles = filter(isfile,
-                            glob(pjoin('IPython','extensions','igrid_help.*')))
+        manpages = [f for f in glob(pjoin('docs','man','*.1')) if isfile(f)]
+
+    igridhelpfiles = [f for f in glob(pjoin('IPython','extensions','igrid_help.*')) if isfile(f)]
 
     # For nested structures, use the utility above
     example_files = make_dir_struct(
@@ -287,7 +291,7 @@ def target_update(target,deps,cmd):
     command if target is outdated."""
 
     if target_outdated(target,deps):
-        system(cmd)
+        os.system(cmd)
 
 #---------------------------------------------------------------------------
 # Find scripts
@@ -315,9 +319,7 @@ def find_scripts(entry_points=False, suffix=''):
             'iptest%s = IPython.testing.iptest:main',
             'irunner%s = IPython.lib.irunner:main'
         ]]
-        gui_scripts = [s % suffix for s in [
-            'ipython%s-qtconsole = IPython.frontend.qt.console.qtconsoleapp:main',
-        ]]
+        gui_scripts = []
         scripts = dict(console_scripts=console_scripts, gui_scripts=gui_scripts)
     else:
         parallel_scripts = pjoin('IPython','parallel','scripts')
@@ -367,62 +369,50 @@ def check_for_dependencies():
     check_for_readline()
 
 def record_commit_info(pkg_dir, build_cmd=build_py):
-    """ Return extended build command class for recording commit
-
-    The extended command tries to run git to find the current commit, getting
-    the empty string if it fails.  It then writes the commit hash into a file
-    in the `pkg_dir` path, named ``.git_commit_info.ini``.
-
-    In due course this information can be used by the package after it is
-    installed, to tell you what commit it was installed from if known.
-
-    To make use of this system, you need a package with a .git_commit_info.ini
-    file - e.g. ``myproject/.git_commit_info.ini`` - that might well look like
-    this::
-
-        # This is an ini file that may contain information about the code state
-        [commit hash]
-        # The line below may contain a valid hash if it has been substituted
-        # during 'git archive'
-        archive_subst_hash=$Format:%h$
-        # This line may be modified by the install process
-        install_hash=
-
-    The .git_commit_info file above is also designed to be used with git
-    substitution - so you probably also want a ``.gitattributes`` file in the
-    root directory of your working tree that contains something like this::
-
-       myproject/.git_commit_info.ini export-subst
-
-    That will cause the ``.git_commit_info.ini`` file to get filled in by ``git
-    archive`` - useful in case someone makes such an archive - for example with
-    via the github 'download source' button.
-
-    Although all the above will work as is, you might consider having something
-    like a ``get_info()`` function in your package to display the commit
-    information at the terminal.  See the ``pkg_info.py`` module in the nipy
-    package for an example.
+    """ Return extended build or sdist command class for recording commit
+    
+    records git commit in IPython.utils._sysinfo.commit
+    
+    for use in IPython.utils.sysinfo.sys_info() calls after installation.
     """
+    
     class MyBuildPy(build_cmd):
         ''' Subclass to write commit data into installation tree '''
         def run(self):
             build_cmd.run(self)
+            # this one will only fire for build commands
+            if hasattr(self, 'build_lib'):
+                self._record_commit(self.build_lib)
+        
+        def make_release_tree(self, base_dir, files):
+            # this one will fire for sdist
+            build_cmd.make_release_tree(self, base_dir, files)
+            self._record_commit(base_dir)
+        
+        def _record_commit(self, base_dir):
             import subprocess
             proc = subprocess.Popen('git rev-parse --short HEAD',
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE,
                                     shell=True)
             repo_commit, _ = proc.communicate()
-            # We write the installation commit even if it's empty
-            cfg_parser = ConfigParser()
-            cfg_parser.read(pjoin(pkg_dir, '.git_commit_info.ini'))
-            if not cfg_parser.has_section('commit hash'):
-                # just in case the ini file is empty or doesn't exist, somehow
-                # we don't want the next line to raise
-                cfg_parser.add_section('commit hash')
-            cfg_parser.set('commit hash', 'install_hash', repo_commit.decode('ascii'))
-            out_pth = pjoin(self.build_lib, pkg_dir, '.git_commit_info.ini')
-            out_file = open(out_pth, 'wt')
-            cfg_parser.write(out_file)
-            out_file.close()
+            repo_commit = repo_commit.strip().decode("ascii")
+            
+            out_pth = pjoin(base_dir, pkg_dir, 'utils', '_sysinfo.py')
+            if os.path.isfile(out_pth) and not repo_commit:
+                # nothing to write, don't clobber
+                return
+            
+            print("writing git commit '%s' to %s" % (repo_commit, out_pth))
+            
+            # remove to avoid overwriting original via hard link
+            try:
+                os.remove(out_pth)
+            except (IOError, OSError):
+                pass
+            with open(out_pth, 'w') as out_file:
+                out_file.writelines([
+                    '# GENERATED BY setup.py\n',
+                    'commit = "%s"\n' % repo_commit,
+                ])
     return MyBuildPy

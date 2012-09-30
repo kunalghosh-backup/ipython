@@ -21,6 +21,7 @@ import time
 
 import zmq
 from nose import SkipTest
+from nose.plugins.attrib import attr
 
 from IPython import parallel  as pmod
 from IPython.parallel import error
@@ -30,7 +31,7 @@ from IPython.parallel.tests import add_engines
 from .clienttest import ClusterTestCase, crash, wait, skip_without
 
 def setup():
-    add_engines(3)
+    add_engines(3, total=True)
 
 class TestLoadBalancedView(ClusterTestCase):
 
@@ -38,9 +39,9 @@ class TestLoadBalancedView(ClusterTestCase):
         ClusterTestCase.setUp(self)
         self.view = self.client.load_balanced_view()
 
+    @attr('crash')
     def test_z_crash_task(self):
         """test graceful handling of engine death (balanced)"""
-        raise SkipTest("crash tests disabled, due to undesirable crash reports")
         # self.add_engines(1)
         ar = self.view.apply_async(crash)
         self.assertRaisesRemote(error.EngineError, ar.get, 10)
@@ -56,7 +57,7 @@ class TestLoadBalancedView(ClusterTestCase):
             return x**2
         data = range(16)
         r = self.view.map_sync(f, data)
-        self.assertEquals(r, map(f, data))
+        self.assertEqual(r, map(f, data))
 
     def test_map_unordered(self):
         def f(x):
@@ -74,8 +75,8 @@ class TestLoadBalancedView(ClusterTestCase):
         # list comprehension uses __iter__
         astheycame = [ r for r in amr ]
         # Ensure that at least one result came out of order:
-        self.assertNotEquals(astheycame, reference, "should not have preserved order")
-        self.assertEquals(sorted(astheycame, reverse=True), reference, "result corrupted")
+        self.assertNotEqual(astheycame, reference, "should not have preserved order")
+        self.assertEqual(sorted(astheycame, reverse=True), reference, "result corrupted")
 
     def test_map_ordered(self):
         def f(x):
@@ -93,8 +94,8 @@ class TestLoadBalancedView(ClusterTestCase):
         # list(amr) uses __iter__
         astheycame = list(amr)
         # Ensure that results came in order
-        self.assertEquals(astheycame, reference)
-        self.assertEquals(amr.result, reference)
+        self.assertEqual(astheycame, reference)
+        self.assertEqual(amr.result, reference)
 
     def test_map_iterable(self):
         """test map on iterables (balanced)"""
@@ -104,7 +105,7 @@ class TestLoadBalancedView(ClusterTestCase):
         # so that it will be an iterator, even in Python 3
         it = iter(arr)
         r = view.map_sync(lambda x:x, arr)
-        self.assertEquals(r, list(arr))
+        self.assertEqual(r, list(arr))
 
     
     def test_abort(self):
@@ -120,7 +121,6 @@ class TestLoadBalancedView(ClusterTestCase):
         self.assertRaises(error.TaskAborted, ar3.get)
 
     def test_retries(self):
-        add_engines(3)
         view = self.view
         view.timeout = 1 # prevent hang if this doesn't behave
         def fail():
@@ -138,8 +138,7 @@ class TestLoadBalancedView(ClusterTestCase):
             self.assertRaisesRemote(error.InvalidDependency, view.apply_sync, lambda : 1)
 
     def test_impossible_dependency(self):
-        if len(self.client) < 2:
-            add_engines(2)
+        self.minimum_engines(2)
         view = self.client.load_balanced_view()
         ar1 = view.apply_async(lambda : 1)
         ar1.get()
@@ -165,7 +164,7 @@ class TestLoadBalancedView(ClusterTestCase):
             ars.append(self.view.apply_async(lambda : 1))
         self.view.wait(ars)
         for ar in ars:
-            self.assertEquals(ar.engine_id, first_id)
+            self.assertEqual(ar.engine_id, first_id)
 
     def test_after(self):
         view = self.view

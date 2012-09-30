@@ -12,10 +12,10 @@
 var IPython = (function (IPython) {
 
     // TextCell base class
+    var key = IPython.utils.keycodes;
 
-    var TextCell = function (notebook) {
+    var TextCell = function () {
         this.code_mirror_mode = this.code_mirror_mode || 'htmlmixed';
-        this.placeholder = this.placeholder || '\u0000';
         IPython.Cell.apply(this, arguments);
         this.rendered = false;
         this.cell_type = this.cell_type || 'text';
@@ -28,16 +28,19 @@ var IPython = (function (IPython) {
     TextCell.prototype.create_element = function () {
         var cell = $("<div>").addClass('cell text_cell border-box-sizing');
         cell.attr('tabindex','2');
-        var input_area = $('<div/>').addClass('text_cell_input');
+        var input_area = $('<div/>').addClass('text_cell_input border-box-sizing');
         this.code_mirror = CodeMirror(input_area.get(0), {
             indentUnit : 4,
             mode: this.code_mirror_mode,
             theme: 'default',
             value: this.placeholder,
-            readOnly: this.read_only
+            readOnly: this.read_only,
+            lineWrapping : true,
+            extraKeys: {"Tab": "indentMore","Shift-Tab" : "indentLess"},
+            onKeyEvent: $.proxy(this.handle_codemirror_keyevent,this)
         });
         // The tabindex=-1 makes this div focusable.
-        var render_area = $('<div/>').addClass('text_cell_render').
+        var render_area = $('<div/>').addClass('text_cell_render border-box-sizing').
             addClass('rendered_html').attr('tabindex','-1');
         cell.append(input_area).append(render_area);
         this.element = cell;
@@ -48,13 +51,30 @@ var IPython = (function (IPython) {
         IPython.Cell.prototype.bind_events.apply(this);
         var that = this;
         this.element.keydown(function (event) {
-            if (event.which === 13) {
+            if (event.which === 13 && !event.shiftKey) {
                 if (that.rendered) {
                     that.edit();
-                    event.preventDefault();
-                }
-            }
+                    return false;
+                };
+            };
         });
+        this.element.dblclick(function () {
+            that.edit();
+        });
+    };
+
+
+    TextCell.prototype.handle_codemirror_keyevent = function (editor, event) {
+        // This method gets called in CodeMirror's onKeyDown/onKeyPress
+        // handlers and is used to provide custom key handling. Its return
+        // value is used to determine if CodeMirror should ignore the event:
+        // true = ignore, false = don't ignore.
+        
+        if (event.keyCode === 13 && (event.shiftKey || event.ctrlKey)) {
+            // Always ignore shift-enter in CodeMirror as we handle it.
+            return true;
+        }
+        return false;
     };
 
 
@@ -79,11 +99,15 @@ var IPython = (function (IPython) {
             var output = text_cell.find("div.text_cell_render");  
             output.hide();
             text_cell.find('div.text_cell_input').show();
-            this.code_mirror.focus();
             this.code_mirror.refresh();
+            this.code_mirror.focus();
+            // We used to need an additional refresh() after the focus, but
+            // it appears that this has been fixed in CM. This bug would show
+            // up on FF when a newly loaded markdown cell was edited.
             this.rendered = false;
-            if (this.get_source() === this.placeholder) {
-                this.set_source('');
+            if (this.get_text() === this.placeholder) {
+                this.set_text('');
+                this.refresh();
             }
         }
     };
@@ -93,22 +117,12 @@ var IPython = (function (IPython) {
     TextCell.prototype.render = function () {};
 
 
-    TextCell.prototype.config_mathjax = function () {
-        var text_cell = this.element;
-        var that = this;
-        text_cell.dblclick(function () {
-            that.edit();
-        });
-        that.render();
-    };
-
-
-    TextCell.prototype.get_source = function() {
+    TextCell.prototype.get_text = function() {
         return this.code_mirror.getValue();
     };
 
 
-    TextCell.prototype.set_source = function(text) {
+    TextCell.prototype.set_text = function(text) {
         this.code_mirror.setValue(text);
         this.code_mirror.refresh();
     };
@@ -143,9 +157,13 @@ var IPython = (function (IPython) {
 
 
     TextCell.prototype.fromJSON = function (data) {
+        IPython.Cell.prototype.fromJSON.apply(this, arguments);
         if (data.cell_type === this.cell_type) {
             if (data.source !== undefined) {
-                this.set_source(data.source);
+                this.set_text(data.source);
+                // make this value the starting point, so that we can only undo
+                // to this state, instead of a blank cell
+                this.code_mirror.clearHistory();
                 this.set_rendered(data.rendered || '');
                 this.rendered = false;
                 this.render();
@@ -155,17 +173,17 @@ var IPython = (function (IPython) {
 
 
     TextCell.prototype.toJSON = function () {
-        var data = {};
+        var data = IPython.Cell.prototype.toJSON.apply(this);
         data.cell_type = this.cell_type;
-        data.source = this.get_source();
+        data.source = this.get_text();
         return data;
     };
 
 
     // HTMLCell
 
-    var HTMLCell = function (notebook) {
-        this.placeholder = "\u0000Type <strong>HTML</strong> and LaTeX: $\\alpha^2$";
+    var HTMLCell = function () {
+        this.placeholder = "Type <strong>HTML</strong> and LaTeX: $\\alpha^2$";
         IPython.TextCell.apply(this, arguments);
         this.cell_type = 'html';
     };
@@ -176,7 +194,7 @@ var IPython = (function (IPython) {
 
     HTMLCell.prototype.render = function () {
         if (this.rendered === false) {
-            var text = this.get_source();
+            var text = this.get_text();
             if (text === "") { text = this.placeholder; }
             this.set_rendered(text);
             this.typeset();
@@ -189,8 +207,8 @@ var IPython = (function (IPython) {
 
     // MarkdownCell
 
-    var MarkdownCell = function (notebook) {
-        this.placeholder = "\u0000Type *Markdown* and LaTeX: $\\alpha^2$";
+    var MarkdownCell = function () {
+        this.placeholder = "Type *Markdown* and LaTeX: $\\alpha^2$";
         IPython.TextCell.apply(this, arguments);
         this.cell_type = 'markdown';
     };
@@ -201,10 +219,18 @@ var IPython = (function (IPython) {
 
     MarkdownCell.prototype.render = function () {
         if (this.rendered === false) {
-            var text = this.get_source();
+            var text = this.get_text();
             if (text === "") { text = this.placeholder; }
             var html = IPython.markdown_converter.makeHtml(text);
-            this.set_rendered(html);
+            try {
+                this.set_rendered(html);
+            } catch (e) {
+                console.log("Error running Javascript in Markdown:");
+                console.log(e);
+                this.set_rendered($("<div/>").addClass("js-error").html(
+                    "Error rendering Markdown!<br/>" + e.toString())
+                );
+            }
             this.typeset()
             this.element.find('div.text_cell_input').hide();
             this.element.find("div.text_cell_render").show();
@@ -225,49 +251,162 @@ var IPython = (function (IPython) {
     };
 
 
-    // RSTCell
+    // RawCell
 
-    var RSTCell = function (notebook) {
-        this.placeholder = "\u0000Type *ReStructured Text* and LaTeX: $\\alpha^2$";
+    var RawCell = function () {
+        this.placeholder = "Type plain text and LaTeX: $\\alpha^2$";
+        this.code_mirror_mode = 'rst';
         IPython.TextCell.apply(this, arguments);
-        this.cell_type = 'rst';
+        this.cell_type = 'raw';
+        var that = this
+
+        this.element.focusout(
+                function() { that.auto_highlight(); }
+            );
     };
 
 
-    RSTCell.prototype = new TextCell();
+    RawCell.prototype = new TextCell();
+
+    RawCell.prototype.auto_highlight = function () {
+        this._auto_highlight(IPython.config.raw_cell_highlight);
+    };
+
+    RawCell.prototype.render = function () {
+        this.rendered = true;
+        this.edit();
+    };
 
 
-    RSTCell.prototype.render = function () {
-        if (this.rendered === false) {
-            var text = this.get_source();
-            if (text === "") { text = this.placeholder; }
-            var settings = {
-                processData : false,
-                cache : false,
-                type : "POST",
-                data : text,
-                headers : {'Content-Type': 'application/x-rst'},
-                success : $.proxy(this.handle_render,this)
+    RawCell.prototype.handle_codemirror_keyevent = function (editor, event) {
+        // This method gets called in CodeMirror's onKeyDown/onKeyPress
+        // handlers and is used to provide custom key handling. Its return
+        // value is used to determine if CodeMirror should ignore the event:
+        // true = ignore, false = don't ignore.
+
+        var that = this;
+        if (event.which === key.UPARROW && event.type === 'keydown') {
+            // If we are not at the top, let CM handle the up arrow and
+            // prevent the global keydown handler from handling it.
+            if (!that.at_top()) {
+                event.stop();
+                return false;
+            } else {
+                return true;
             };
-            $.ajax("/rstservice/render", settings);
-            this.element.find('div.text_cell_input').hide();
-            this.element.find("div.text_cell_render").show();
-            this.set_rendered("Rendering...");
+        } else if (event.which === key.DOWNARROW && event.type === 'keydown') {
+            // If we are not at the bottom, let CM handle the down arrow and
+            // prevent the global keydown handler from handling it.
+            if (!that.at_bottom()) {
+                event.stop();
+                return false;
+            } else {
+                return true;
+            };
+        };
+        return false;
+    };
+
+
+    RawCell.prototype.select = function () {
+        IPython.Cell.prototype.select.apply(this);
+        this.code_mirror.refresh();
+        this.code_mirror.focus();
+    };
+
+
+    RawCell.prototype.at_top = function () {
+        var cursor = this.code_mirror.getCursor();
+        if (cursor.line === 0 && cursor.ch === 0) {
+            return true;
+        } else {
+            return false;
         }
     };
 
 
-    RSTCell.prototype.handle_render = function (data, status, xhr) {
-        this.set_rendered(data);
-        this.typeset();
-        this.rendered = true;
+    RawCell.prototype.at_bottom = function () {
+        var cursor = this.code_mirror.getCursor();
+        if (cursor.line === (this.code_mirror.lineCount()-1) && cursor.ch === this.code_mirror.getLine(cursor.line).length) {
+            return true;
+        } else {
+            return false;
+        }
     };
 
+
+    // HTMLCell
+
+    var HeadingCell = function () {
+        this.placeholder = "Type Heading Here";
+        IPython.TextCell.apply(this, arguments);
+        this.cell_type = 'heading';
+        this.level = 1;
+    };
+
+
+    HeadingCell.prototype = new TextCell();
+
+
+    HeadingCell.prototype.fromJSON = function (data) {
+        if (data.level != undefined){
+            this.level = data.level;
+        }
+        IPython.TextCell.prototype.fromJSON.apply(this, arguments);
+    };
+
+
+    HeadingCell.prototype.toJSON = function () {
+        var data = IPython.TextCell.prototype.toJSON.apply(this);
+        data.level = this.get_level();
+        return data;
+    };
+
+
+    HeadingCell.prototype.set_level = function (level) {
+        this.level = level;
+        if (this.rendered) {
+            this.rendered = false;
+            this.render();
+        };
+    };
+
+
+    HeadingCell.prototype.get_level = function () {
+        return this.level;
+    };
+
+
+    HeadingCell.prototype.set_rendered = function (text) {
+        var r = this.element.find("div.text_cell_render");
+        r.empty();
+        r.append($('<h'+this.level+'/>').html(text));
+    };
+
+
+    HeadingCell.prototype.get_rendered = function () {
+        var r = this.element.find("div.text_cell_render");
+        return r.children().first().html();
+    };
+
+
+    HeadingCell.prototype.render = function () {
+        if (this.rendered === false) {
+            var text = this.get_text();
+            if (text === "") { text = this.placeholder; }
+            this.set_rendered(text);
+            this.typeset();
+            this.element.find('div.text_cell_input').hide();
+            this.element.find("div.text_cell_render").show();
+            this.rendered = true;
+        };
+    };
 
     IPython.TextCell = TextCell;
     IPython.HTMLCell = HTMLCell;
     IPython.MarkdownCell = MarkdownCell;
-    IPython.RSTCell = RSTCell;
+    IPython.RawCell = RawCell;
+    IPython.HeadingCell = HeadingCell;
 
 
     return IPython;

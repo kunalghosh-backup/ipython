@@ -26,6 +26,32 @@ import signal
 import sys
 import uuid
 
+# If run on Windows, install an exception hook which pops up a
+# message box. Pythonw.exe hides the console, so without this
+# the application silently fails to load.
+#
+# We always install this handler, because the expectation is for
+# qtconsole to bring up a GUI even if called from the console.
+# The old handler is called, so the exception is printed as well.
+# If desired, check for pythonw with an additional condition
+# (sys.executable.lower().find('pythonw.exe') >= 0).
+if os.name == 'nt':
+    old_excepthook = sys.excepthook
+
+    def gui_excepthook(exctype, value, tb):
+        try:
+            import ctypes, traceback
+            MB_ICONERROR = 0x00000010L
+            title = u'Error starting IPython QtConsole'
+            msg = u''.join(traceback.format_exception(exctype, value, tb))
+            ctypes.windll.user32.MessageBoxW(0, msg, title, MB_ICONERROR)
+        finally:
+            # Also call the old exception hook to let it do
+            # its thing too.
+            old_excepthook(exctype, value, tb)
+
+    sys.excepthook = gui_excepthook
+
 # System library imports
 from IPython.external.qt import QtCore, QtGui
 
@@ -75,16 +101,10 @@ ipython qtconsole --pylab=inline  # start with pylab in inline plotting mode
 # start with copy of flags
 flags = dict(flags)
 qt_flags = {
-    'pure' : ({'IPythonQtConsoleApp' : {'pure' : True}},
-            "Use a pure Python kernel instead of an IPython kernel."),
-    'plain' : ({'ConsoleWidget' : {'kind' : 'plain'}},
+    'plain' : ({'IPythonQtConsoleApp' : {'plain' : True}},
             "Disable rich text support."),
 }
-qt_flags.update(boolean_flag(
-    'gui-completion', 'ConsoleWidget.gui_completion',
-    "use a GUI widget for tab completion",
-    "use plaintext output for completion"
-))
+
 # and app_flags from the Console Mixin
 qt_flags.update(app_flags)
 # add frontend flags to the full set
@@ -93,7 +113,6 @@ flags.update(qt_flags)
 # start with copy of front&backend aliases list
 aliases = dict(aliases)
 qt_aliases = dict(
-
     style = 'IPythonWidget.syntax_style',
     stylesheet = 'IPythonQtConsoleApp.stylesheet',
     colors = 'ZMQInteractiveShell.colors',
@@ -103,6 +122,7 @@ qt_aliases = dict(
 )
 # and app_aliases from the Console Mixin
 qt_aliases.update(app_aliases)
+qt_aliases.update({'gui-completion':'ConsoleWidget.gui_completion'})
 # add frontend aliases to the full set
 aliases.update(qt_aliases)
 
@@ -141,7 +161,7 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
     """
     examples = _examples
 
-    classes = [IPKernelApp, IPythonWidget, ZMQInteractiveShell, ProfileDir, Session]
+    classes = [IPythonWidget] + IPythonConsoleApp.classes
     flags = Dict(flags)
     aliases = Dict(aliases)
     frontend_flags = Any(qt_flags)
@@ -154,17 +174,13 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
     plain = CBool(False, config=True,
         help="Use a plaintext widget instead of rich text (plain can't print/save).")
 
-    def _pure_changed(self, name, old, new):
-        kind = 'plain' if self.plain else 'rich'
+    def _plain_changed(self, name, old, new):
+        kind = 'plain' if new else 'rich'
         self.config.ConsoleWidget.kind = kind
-        if self.pure:
-            self.widget_factory = FrontendWidget
-        elif self.plain:
+        if new:
             self.widget_factory = IPythonWidget
         else:
             self.widget_factory = RichIPythonWidget
-
-    _plain_changed = _pure_changed
 
     # the factory for creating a widget
     widget_factory = Any(RichIPythonWidget)
@@ -184,12 +200,13 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
                                 config=self.config,
         )
         # start the kernel
-        kwargs = dict(ipython=not self.pure)
+        kwargs = dict()
         kwargs['extra_arguments'] = self.kernel_argv
         kernel_manager.start_kernel(**kwargs)
         kernel_manager.start_channels()
         widget = self.widget_factory(config=self.config,
                                    local_kernel=True)
+        self.init_colors(widget)
         widget.kernel_manager = kernel_manager
         widget._existing = False
         widget._may_close = True
@@ -212,6 +229,7 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
         kernel_manager.start_channels()
         widget = self.widget_factory(config=self.config,
                                 local_kernel=False)
+        self.init_colors(widget)
         widget._existing = True
         widget._may_close = False
         widget._confirm_exit = False
@@ -230,6 +248,7 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
         local_kernel = (not self.existing) or self.ip in LOCAL_IPS
         self.widget = self.widget_factory(config=self.config,
                                         local_kernel=local_kernel)
+        self.init_colors(self.widget)
         self.widget._existing = self.existing
         self.widget._may_close = not self.existing
         self.widget._confirm_exit = self.confirm_exit
@@ -244,16 +263,12 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
         self.window.add_tab_with_frontend(self.widget)
         self.window.init_menu_bar()
 
-        self.window.setWindowTitle('Python' if self.pure else 'IPython')
+        self.window.setWindowTitle('IPython')
 
-    def init_colors(self):
+    def init_colors(self, widget):
         """Configure the coloring of the widget"""
         # Note: This will be dramatically simplified when colors
         # are removed from the backend.
-
-        if self.pure:
-            # only IPythonWidget supports styling
-            return
 
         # parse the colors arg down to current known labels
         try:
@@ -264,6 +279,10 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
             style = self.config.IPythonWidget.syntax_style
         except AttributeError:
             style = None
+        try:
+            sheet = self.config.IPythonWidget.style_sheet
+        except AttributeError:
+            sheet = None
 
         # find the value for colors:
         if colors:
@@ -284,30 +303,27 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
         else:
             colors=None
 
-        # Configure the style.
-        widget = self.widget
+        # Configure the style
         if style:
             widget.style_sheet = styles.sheet_from_template(style, colors)
             widget.syntax_style = style
             widget._syntax_style_changed()
             widget._style_sheet_changed()
         elif colors:
-            # use a default style
+            # use a default dark/light/bw style
             widget.set_default_style(colors=colors)
-        else:
-            # this is redundant for now, but allows the widget's
-            # defaults to change
-            widget.set_default_style()
 
         if self.stylesheet:
-            # we got an expicit stylesheet
+            # we got an explicit stylesheet
             if os.path.isfile(self.stylesheet):
                 with open(self.stylesheet) as f:
                     sheet = f.read()
-                widget.style_sheet = sheet
-                widget._style_sheet_changed()
             else:
-                raise IOError("Stylesheet %r not found."%self.stylesheet)
+                raise IOError("Stylesheet %r not found." % self.stylesheet)
+        if sheet:
+            widget.style_sheet = sheet
+            widget._style_sheet_changed()
+            
 
     def init_signal(self):
         """allow clean shutdown on sigint"""
@@ -327,7 +343,6 @@ class IPythonQtConsoleApp(BaseIPythonApplication, IPythonConsoleApp):
         super(IPythonQtConsoleApp, self).initialize(argv)
         IPythonConsoleApp.initialize(self,argv)
         self.init_qt_elements()
-        self.init_colors()
         self.init_signal()
 
     def start(self):

@@ -30,7 +30,7 @@ from IPython.parallel.tests import add_engines
 from .clienttest import ClusterTestCase
 
 def setup():
-    add_engines(1)
+    add_engines(1, total=True)
 
 @pmod.require('time')
 def wait(n):
@@ -75,7 +75,7 @@ class DependencyTest(ClusterTestCase):
         def encode(dikt):
             return urllib.urlencode(dikt)
         # must pass through canning to properly connect namespaces
-        self.assertEquals(encode(dict(a=5)), 'a=5')
+        self.assertEqual(encode(dict(a=5)), 'a=5')
     
     def test_success_only(self):
         dep = pmod.Dependency(mixed, success=True, failure=False)

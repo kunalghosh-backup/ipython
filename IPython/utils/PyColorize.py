@@ -28,10 +28,14 @@ It shows how to use the built-in keyword, token and tokenize modules to
 scan Python source code and re-emit it with no changes to its original
 formatting (which is the hard part).
 """
+from __future__ import print_function
+
+from __future__ import unicode_literals
 
 __all__ = ['ANSICodeColors','Parser']
 
 _scheme_default = 'Linux'
+
 
 # Imports
 import StringIO
@@ -137,7 +141,7 @@ class Parser:
         out should be a file-type object. Optionally, out can be given as the
         string 'str' and the parser will automatically return the output in a
         string."""
-        
+
         string_output = 0
         if out == 'str' or self.out == 'str' or \
            isinstance(self.out,StringIO.StringIO):
@@ -159,14 +163,14 @@ class Parser:
                 return raw,error
             else:
                 return None,error
-        
+
         # local shorthands
         colors = self.color_table[scheme].colors
         self.colors = colors # put in object so __call__ sees it
 
         # Remove trailing whitespace and normalize tabs
         self.raw = raw.expandtabs().rstrip()
-        
+
         # store line offsets in self.lines
         self.lines = [0, 0]
         pos = 0
@@ -202,10 +206,10 @@ class Parser:
             return (output, error)
         return (None, error)
 
-    def __call__(self, toktype, toktext, (srow,scol), (erow,ecol), line):
+    def __call__(self, toktype, toktext, start_pos, end_pos, line):
         """ Token handler, with syntax highlighting."""
-
-        # local shorthands
+        (srow,scol) = start_pos
+        (erow,ecol) = end_pos
         colors = self.colors
         owrite = self.out.write
 
@@ -216,11 +220,6 @@ class Parser:
         oldpos = self.pos
         newpos = self.lines[srow] + scol
         self.pos = newpos + len(toktext)
-
-        # handle newlines
-        if toktype in [token.NEWLINE, tokenize.NL]:
-            owrite(linesep)
-            return
 
         # send the original whitespace, if needed
         if newpos > oldpos:
@@ -248,7 +247,7 @@ class Parser:
 
         # send text
         owrite('%s%s%s' % (color,toktext,colors.normal))
-            
+
 def main(argv=None):
     """Run as a command-line script: colorize a python file or stdin using ANSI
     color escapes and print to stdout.
@@ -286,9 +285,9 @@ If no filename is given, or if filename is -, read standard input."""
         stream = sys.stdin
     else:
         try:
-            stream = file(fname)
-        except IOError,msg:
-            print >> sys.stderr, msg
+            stream = open(fname)
+        except IOError as msg:
+            print(msg, file=sys.stderr)
             sys.exit(1)
 
     parser = Parser()
@@ -299,7 +298,7 @@ If no filename is given, or if filename is -, read standard input."""
         try:
             # write colorized version to stdout
             parser.format(stream.read(),scheme=opts.scheme_name)
-        except IOError,msg:
+        except IOError as msg:
             # if user reads through a pager and quits, don't print traceback
             if msg.args != (32,'Broken pipe'):
                 raise

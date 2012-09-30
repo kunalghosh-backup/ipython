@@ -7,6 +7,7 @@
 
 # stdlib
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -31,7 +32,7 @@ def test_history():
         hist_file = os.path.join(tmpdir, 'history.sqlite')
         try:
             ip.history_manager = HistoryManager(shell=ip, hist_file=hist_file)
-            hist = ['a=1', 'def f():\n    test = 1\n    return test', u"b='€Æ¾÷ß'"]
+            hist = [u'a=1', u'def f():\n    test = 1\n    return test', u"b='€Æ¾÷ß'"]
             for i, h in enumerate(hist, start=1):
                 ip.history_manager.store_inputs(i, h)
 
@@ -51,6 +52,12 @@ def test_history():
             # Check whether specifying a range beyond the end of the current
             # session results in an error (gh-804)
             ip.magic('%hist 2-500')
+            
+            # Check that we can write non-ascii characters to a file
+            ip.magic("%%hist -f %s" % os.path.join(tmpdir, "test1"))
+            ip.magic("%%hist -pf %s" % os.path.join(tmpdir, "test2"))
+            ip.magic("%%hist -nf %s" % os.path.join(tmpdir, "test3"))
+            ip.magic("%%save %s 1-10" % os.path.join(tmpdir, "test4"))
 
             # New session
             ip.history_manager.reset()
@@ -80,15 +87,27 @@ def test_history():
             # Check get_hist_search
             gothist = ip.history_manager.search("*test*")
             nt.assert_equal(list(gothist), [(1,2,hist[1])] )
+            gothist = ip.history_manager.search("*=*")
+            nt.assert_equal(list(gothist),
+                            [(1, 1, hist[0]),
+                             (1, 2, hist[1]),
+                             (1, 3, hist[2]),
+                             (2, 1, newcmds[0]),
+                             (2, 3, newcmds[2])])
+            gothist = ip.history_manager.search("*=*", n=3)
+            nt.assert_equal(list(gothist),
+                            [(1, 3, hist[2]),
+                             (2, 1, newcmds[0]),
+                             (2, 3, newcmds[2])])
             gothist = ip.history_manager.search("b*", output=True)
             nt.assert_equal(list(gothist), [(1,3,(hist[2],"spam"))] )
 
             # Cross testing: check that magic %save can get previous session.
             testfilename = os.path.realpath(os.path.join(tmpdir, "test.py"))
-            ip.magic_save(testfilename + " ~1/1-3")
-            with py3compat.open(testfilename) as testfile:
+            ip.magic("save " + testfilename + " ~1/1-3")
+            with py3compat.open(testfilename, encoding='utf-8') as testfile:
                 nt.assert_equal(testfile.read(),
-                                        u"# coding: utf-8\n" + u"\n".join(hist))
+                                        u"# coding: utf-8\n" + u"\n".join(hist)+u"\n")
 
             # Duplicate line numbers - check that it doesn't crash, and
             # gets a new session
@@ -132,7 +151,7 @@ def test_hist_file_config():
     cfg.HistoryManager.hist_file = tfile.name
     try:
         hm = HistoryManager(shell=get_ipython(), config=cfg)
-        nt.assert_equals(hm.hist_file, cfg.HistoryManager.hist_file)
+        nt.assert_equal(hm.hist_file, cfg.HistoryManager.hist_file)
     finally:
         try:
             os.remove(tfile.name)
